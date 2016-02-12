@@ -27,16 +27,19 @@
         false))
     false))
 
-(defn close-socket-client [{:keys [in out socket address] :as this}]
-  (log/info "Closing async socket on address" address)
-  (.shutdownInput socket)
-  (.shutdownOutput socket)
-  (.close socket)
-  (async/close! in)
-  (async/close! out)
+(defn close-socket-client [{:keys [in out socket] :as this}]
+  (log/info "Trying to close socket")
+  (when (socket-open? socket)
+    (log/info "Closing async socket")
+    (.shutdownInput socket)
+    (.shutdownOutput socket)
+    (.close socket)
+    (async/close! in)
+    (async/close! out))
   (assoc this :socket nil :in nil :out nil))
 
-(defn- init-async-socket [socket address]
+(defn- init-async-socket [socket]
+  (log/info "Initing new async socket")
   (let [in (io/reader socket)
         out (io/writer socket)
         in-ch (async/chan)
@@ -44,7 +47,7 @@
         public-socket {:socket socket :in in-ch :out out-ch}]
     
     (async/go-loop [] 
-      (let [line (socket-read-line-or-nil)]
+      (let [line (socket-read-line-or-nil socket in)]
         (if-not line
           (close-socket-client public-socket)
           (do
@@ -57,7 +60,7 @@
           (close-socket-client public-socket)
           (recur))))
     
-    (log/info "New async socket opened at address" address)
+    (log/info "New async socket opened")
     public-socket))
 
 
@@ -79,11 +82,14 @@
     
     (async/go-loop []
       (if (and (not (.isClosed java-server)) (.isBound java-server))
-        (try
-          (async/>! conns (init-async-socket (.accept java-server)))
-          (catch SocketException e
-            (log/error e)
-            (stop-socket-server public-server)))
+        (do
+          (try
+            (log/info "Waiting for connection")
+            (async/>! conns (init-async-socket (.accept java-server)))
+            (catch Exception e
+              (log/error e)
+              (stop-socket-server public-server)))
+          (recur))
         (stop-socket-server public-server)))
     public-server))
 
@@ -92,9 +98,18 @@
 
 
 
-
-
-
+(defn start-echo-server [port]
+  (let [server (socket-server port)]
+    (async/go-loop []
+      (when-let [socket (async/<! (:connections server))]
+        (log/info "Accepted connection")
+        (async/go-loop []
+          (when-let [msg (async/<! (:in socket))]
+            (log/info "Received message" msg)
+            (async/>! (:out socket) msg)
+            (recur)))
+        (recur)))
+    server))
 
 
 
@@ -110,13 +125,21 @@
 
 (defn receive
   [socket]
-  (.readLine (io/reader socket)))
+  (try
+    (let [msg (.readLine (io/reader socket))]
+      (log/info "Received message" msg)
+      msg)
+    (catch SocketException e
+      (log/error e))))
 
 (defn send
   [socket msg]
-  (let [writer (io/writer socket)]
-    (.write writer msg)
-    (.flush writer)))
+  (try 
+    (let [writer (io/writer socket)]
+      (.write writer msg)
+      (.flush writer))
+    (catch SocketException e
+      (log/error e))))
 
 (defn serve [port handler]
   (let [running (atom true)]
@@ -124,8 +147,10 @@
       (while @running 
         (with-open [server-sock (ServerSocket. port)
                     sock (.accept server-sock)]
+          (log/info "Opened socket")
           (let [msg-in (receive sock)
-                msg-out (handler msg-in)]
+                msg-out (try (handler msg-in) (catch Exception e (log/error e)))]
+            (log/info "Got message" msg-in)
             (send sock msg-out)))))
     running))
 
