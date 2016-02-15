@@ -1,7 +1,8 @@
 (ns funky-server.core  
   (:require [clojure.java.io :as io]
             [clojure.core.async :as async]
-            [clojure.tools.logging :as log])
+            [clojure.tools.logging :as log]
+            [clojure.data.json :as json])
   (:import [java.net ServerSocket SocketException InetAddress InetSocketAddress]
            [java.io BufferedReader BufferedWriter]))
 
@@ -93,10 +94,52 @@
         (stop-socket-server public-server)))
     public-server))
 
+(defn start-game [min-players max-players id step-time]
+  (let [in (async/chan)
+        step (atom 0)
+        buckets [(async/chan) (async/chan)]
+        out (async/chan)
+        out-mult (async/mult out)]
+    
+    (async/go-loop []
+      (async/>! (nth buckets (mod @step 2)) (async/<! in))
+      (recur))
+    
+    (async/go-loop []
+      (async/>! out (async/<! (nth buckets (mod (+ 1 @step) 2))))
+      (recur))
 
+    (async/go-loop []
+      (async/<! (timeout step-time))
+      (swap! step inc)
+      (recur))
+    
+    {:in in 
+     :out-mult out-mult 
+     :players 0 
+     :max-players max-players 
+     :id id 
+     :close #(async/close! out)}))
 
+(defn choose-game [player-socket games]
+  (async/go-loop[]
+    (when-let [msg (json/read-str (async/<! (:in socket)) :key-fn keyword)
+               id (:id msg)
+               max-players (:maxPlayers msg)]
+      (first (filter games #(identical? (:id %) id)))))
 
-
+(defn add-player [game player-socket]
+  (pipe (:in player-socket) (:in game))
+  (tap (:out-mult game) (:out player-socket))
+  (assoc game :players inc))
+  
+(defn start-lockstep-server [port]
+  (let [server (socket-server port)
+        games (atom [])]
+    (async/go-loop []
+      (when-let [socket (async/<! (:connections server))]
+        (log/info "Accepted connection")
+        (if-let [game (first (filter games #()))])))))
 
 (defn start-echo-server [port]
   (let [server (socket-server port)]
