@@ -42,8 +42,8 @@
   (log/info "Initing new async socket")
   (let [in (io/reader socket)
         out (io/writer socket)
-        in-ch (async/chan)
-        out-ch (async/chan)
+        in-ch (async/chan 8 (map #(json/read-str % :key-fn keyword)) #(log/error "Error in received message" %))
+        out-ch (async/chan 8 (map json/write-str) #(log/error "Error in sent message" %))
         public-socket {:socket socket :in in-ch :out out-ch}]
     
     (async/go-loop [] 
@@ -97,14 +97,8 @@
 
 
 
-
-
-
-;; socket = require("socket")
-;; tcp = socket.tcp()
-;; tcp:connect("127.0.0.1", 8888)
-;; tcp:settimeout(0)
-;; tcp:send("{\"id\":\"foo\", \"maxPlayers\":4, \"stepTime\":50}\n")
+;; socket = require("socket");tcp = socket.tcp();tcp:connect("127.0.0.1", 8888);tcp:settimeout(0);
+;; tcp:send("{\"id\":\"foo\", \"max-players\":4, \"step-time\":1000}\n")
 ;; tcp:send("{\"msg\":\"foobar\"}\n")
 ;; print(tcp:receive()) -- prints "New player..."
 ;; print(tcp:receive()) -- prints "...msg:foobar..."
@@ -113,18 +107,16 @@
 (defn start-game [max-players id step-time]
   (log/info "Starting game with id" id ", max-players" max-players ", step-time" step-time)
   (let [in (async/chan)
-        step (atom 0)
-        buckets [(async/chan) (async/chan)]
         out (async/chan)
-        out-mult (async/mult out)]
+        out-mult (async/mult out)
+        step (atom 0)]
     
-    (async/go-loop []
-      (async/>! out (json/write-str (assoc (json/read-str (async/<! in) :key-fn keyword) :step (+ @step 2))))
-      (recur))
-
+    (async/pipeline 1 out (map #(assoc % :step (+ @step 2))) in)
+    
     (async/go-loop []
       (async/<! (async/timeout step-time))
       (swap! step inc)
+      (async/>! out {:msg "lock" :step (+ @step 1)})
       (recur))
     
     {:in in 
@@ -134,13 +126,11 @@
      :id id 
      :close #(do (async/close! out) (async/close! in))}))
 
+
 (defn choose-game [player-socket games]
   (log/info "Choosing game")
   (try 
-    (let [msg (json/read-str (async/<!! (:in player-socket)) :key-fn keyword)
-          id (:id msg)
-          max-players (:maxPlayers msg)
-          step-time (:stepTime msg)]
+    (let [{:keys [id max-players step-time]} (async/<!! (:in player-socket))]
       (log/info "Looking for game with id" id "in games" @games "and found" (first (filter #(= (:id %) id) @games)))
       (log/info id (:id (first @games)) (= id (:id (first @games))))
       (or (first (filter #(= (:id %) id) @games))
@@ -155,7 +145,7 @@
   (async/tap (:out-mult game) (:out player-socket))
   (swap! (:players game) inc)
   (log/info "players" @(:players game))
-  (async/>!! (:in game) (json/write-str {:msg "New player joined" :players @(:players game)}))
+  (async/>!! (:in game) {:msg "New player joined" :players @(:players game)})
   game)
   
 (defn start-lockstep-server [port]
@@ -172,7 +162,7 @@
 
 
 
-
+(def server (start-lockstep-server 8888))
 
 
 
