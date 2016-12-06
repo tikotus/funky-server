@@ -109,7 +109,7 @@
     (async/go-loop []
       (async/<! (async/timeout step-time))
       (swap! step inc)
-      (async/>! out {:msg "lock" :step (+ @step 1)})
+;;      (async/>! out {:msg "lock" :step (+ @step 1)})
       (recur))
     
     {:in in 
@@ -141,16 +141,15 @@
            (conj games)))))
 
   
-(defn start-lockstep-server [port]
-  (let [server (socket-server port)]
-    (async/reduce join-game [] (:connections server))
-    server))
+(defn start-lockstep-server [server]
+  (async/reduce join-game [] (:connections server)))
 
+(defn -main []
+  (async/<!! (start-lockstep-server (socket-server 8888))))
 
-(def server (start-lockstep-server 8888))
-(stop-socket-server server)
-
-
+;;(def server (socket-server 8888))
+;;(start-lockstep-server server)
+;;(stop-socket-server server)
 
 
 ;; socket = require("socket");tcp = socket.tcp();tcp:connect("127.0.0.1", 8888);tcp:settimeout(0);tcp:send("{\"id\":\"foo\", \"max-players\":4, \"step-time\":1000}\n")
