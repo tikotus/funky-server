@@ -109,7 +109,7 @@
     (async/go-loop []
       (async/<! (async/timeout step-time))
       (swap! step inc)
-;;      (async/>! out {:msg "lock" :step (+ @step 1)})
+      (async/>! out {:lock @step})
       (recur))
     
     {:in in 

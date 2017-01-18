@@ -1,12 +1,21 @@
-(require '[aleph.http :as http])
-(require '[aleph.tcp :as tcp])
-(require '[manifold.stream :as s])
+(ns funky-server.aleph-core  
+  (:require [clojure.java.io :as io]
+            [clojure.core.async :as async]
+            [clojure.tools.logging :as log]
+            [clojure.data.json :as json]
+            [aleph.http :as http]
+            [aleph.tcp :as tcp]
+            [clj-time.local :as l]
+            [clj-time.core :as t]
+            [manifold.stream :as s]))
 
+(def system-newline ;; This is in clojure.core but marked private.
+  (System/getProperty "line.separator"))
 
 (defn- init-socket [stream]
   (log/info "Initing new async socket")
   (let [in-ch (async/chan 8 (map #(json/read-str (String. %) :key-fn keyword)) #(log/error "Error in received message" %))
-        out-ch (async/chan 8 (map json/write-str) #(log/error "Error in sent message" %))
+        out-ch (async/chan 8 (map #(str (json/write-str %) system-newline)) #(log/error "Error in sent message" %))
         public-socket {:in in-ch :out out-ch}]
     
     (s/connect stream in-ch)
@@ -18,7 +27,7 @@
 
 (defn socket-server [port]
   (let [connections (async/chan 50 (map init-socket))
-  		aleph-server (tcp/start-server (fn [s _] (async/>!! connections s)) {:port port})]
+  		  aleph-server (tcp/start-server (fn [s _] (async/>!! connections s)) {:port port})]
     (log/info "Starting async server at port" port)
     { :port port :connections connections :server aleph-server}))
 
@@ -28,15 +37,19 @@
   (let [in (async/chan)
         out (async/chan)
         out-mult (async/mult out)
-        step (atom 0)]
+        step (atom 0)
+        start-time (l/local-now)]
     
-    (async/pipeline 1 out (map #(assoc % :step (+ @step 2))) in)
+    (async/pipeline 1 out (map #(assoc % :step @step)) in)
     
     (async/go-loop []
-      (async/<! (async/timeout step-time))
-      (swap! step inc)
-;;      (async/>! out {:msg "lock" :step (+ @step 1)})
-      (recur))
+      (let [run-time (t/in-millis (t/interval start-time (l/local-now)))
+            step-time (- step-time (mod run-time step-time))]
+        (async/<! (async/timeout step-time))
+        (log/info (str "step " @step " " (l/local-now)))
+        (swap! step inc)
+        (async/>! out {:lock (dec @step)})
+        (recur)))
     
     {:in in 
      :out-mult out-mult 
@@ -58,10 +71,10 @@
    (keep-indexed #(when (pred %2) %1) coll))
 
 (defn join-game [games player-socket]
-  (let [{:keys [id max-players step-time]} (async/<!! (:in player-socket))]
+  (let [{:keys [id maxPlayers stepTime]} (async/<!! (:in player-socket))]
     (if-let [i (first (indices #(= (:id %) id) games))]
       (assoc games i (add-player player-socket (nth games i)))
-      (->> (start-game max-players id step-time)
+      (->> (start-game maxPlayers id stepTime)
            (add-player player-socket)
            (conj games)))))
 
@@ -69,12 +82,11 @@
 (defn start-lockstep-server [server]
   (async/reduce join-game [] (:connections server)))
 
-
 (defn -main []
   (async/<!! (start-lockstep-server (socket-server 8888))))
 
 
-(.close (:server server))
-(def server (socket-server 8888))
-(start-lockstep-server server)
+;;(.close (:server server))
+;;(def server (socket-server 8888))
+;;(start-lockstep-server server)
 
