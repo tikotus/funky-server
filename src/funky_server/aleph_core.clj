@@ -14,7 +14,7 @@
 
 (defn- init-socket [stream]
   (log/info "Initing new async socket")
-  (let [in-ch (async/chan 8 (map #(json/read-str (String. %) :key-fn keyword)) #(log/error "Error in received message" %))
+  (let [in-ch (async/chan (async/sliding-buffer 1) (map #(json/read-str (String. %) :key-fn keyword)) #(log/error "Error in received message" %))
         out-ch (async/chan 8 (map #(str (json/write-str %) system-newline)) #(log/error "Error in sent message" %))
         public-socket {:in in-ch :out out-ch}]
     
@@ -46,7 +46,7 @@
       (let [run-time (t/in-millis (t/interval start-time (l/local-now)))
             step-time (- step-time (mod run-time step-time))]
         (async/<! (async/timeout step-time))
-        (log/info (str "step " @step " " (l/local-now)))
+        ;;(log/info (str "step " @step " " (l/local-now)))
         (swap! step inc)
         (async/>! out {:lock (dec @step)})
         (recur)))
