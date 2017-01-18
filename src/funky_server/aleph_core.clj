@@ -82,7 +82,11 @@
 (defn start-lockstep-server [server]
   (async/reduce join-game [] (:connections server)))
 
+(defn echo-handler [s info]
+  (s/connect s s))
+
 (defn -main []
+  (tcp/start-server echo-handler {:port 10001})
   (async/<!! (start-lockstep-server (socket-server 8888))))
 
 
