@@ -69,7 +69,7 @@
       (let [run-time (t/in-millis (t/interval start-time (l/local-now)))
             step-time (- step-time (mod run-time step-time))]
         (async/<! (async/timeout step-time))
-        (log/info (str "step " @step " " (l/local-now)))
+        ;;(log/info (str "step " @step " " (l/local-now)))
         (swap! step inc)
         (async/>! out {:lock (dec @step)})
         (recur)))
