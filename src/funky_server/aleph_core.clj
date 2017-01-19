@@ -77,6 +77,7 @@
     {:in in 
      :out-mult out-mult 
      :players 0
+     :next-player-id 0
      :max-players max-players 
      :id id 
      :close #(do (async/close! out) (async/close! in))}))
@@ -87,7 +88,10 @@
   (async/pipe (:in player-socket) (:in game) false)
   (async/tap (:out-mult game) (:out player-socket))
   (async/>!! (:in game) {:msg "New player joined" :players (inc (:players game))})
-  (update game :players inc))
+  (async/>!! (:out player-socket) {:newGame (= (:players game) 0) :playerId (:next-player-id game)})
+  (-> game
+      (update :players inc)
+      (update :next-player-id inc)))
 
 
 (defn indices [pred coll]
