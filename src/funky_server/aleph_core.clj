@@ -69,7 +69,7 @@
       (let [run-time (t/in-millis (t/interval start-time (l/local-now)))
             step-time (- step-time (mod run-time step-time))]
         (async/<! (async/timeout step-time))
-        ;;(log/info (str "step " @step " " (l/local-now)))
+        (log/info (str "step " @step " " (l/local-now)))
         (swap! step inc)
         (async/>! out {:lock (dec @step)})
         (recur)))
@@ -102,15 +102,16 @@
            (conj games)))))
 
   
-(defn start-lockstep-server [server]
-  (async/reduce join-game [] (:connections server)))
+(defn start-lockstep-server [socket-server websocket-server]
+  (async/go (async/reduce join-game [] (:connections websocket-server)))
+  (async/reduce join-game [] (:connections socket-server)))
 
 (defn echo-handler [s info]
   (s/connect s s))
 
 (defn -main []
   (tcp/start-server echo-handler {:port 10001})
-  (async/<!! (start-lockstep-server (websocket-server 8889))))
+  (async/<!! (start-lockstep-server (socket-server 8888) (websocket-server 8889))))
 
 
 ;;(.close (:server server))
