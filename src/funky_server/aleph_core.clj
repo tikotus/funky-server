@@ -86,9 +86,9 @@
 (defn add-player [player-socket game]
   (log/info "Add player to game" (:id game) "with" (:players game) "players")
   (async/pipe (:in player-socket) (:in game) false)
+  (async/>!! (:out player-socket) {:newGame (= (:players game) 0) :playerId (:next-player-id game)})
   (async/tap (:out-mult game) (:out player-socket))
   (async/>!! (:in game) {:msg "New player joined" :players (inc (:players game))})
-  (async/>!! (:out player-socket) {:newGame (= (:players game) 0) :playerId (:next-player-id game)})
   (-> game
       (update :players inc)
       (update :next-player-id inc)))
