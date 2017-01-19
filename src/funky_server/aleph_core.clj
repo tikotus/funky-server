@@ -18,7 +18,7 @@
    :body "Expected a websocket request."})
 
 (defn- handle-message [msg]
-  (log/info (String. msg))
+  ;;(log/info (String. msg))
   (json/read-str (String. msg) :key-fn keyword))
 
 (defn- init-socket [stream]
