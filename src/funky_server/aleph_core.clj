@@ -9,6 +9,11 @@
             [clj-time.core :as t]
             [manifold.stream :as s]))
 
+(defn new-uuid 
+  "Retrieve a type 4 (pseudo randomly generated) UUID. The UUID is generated using a cryptographically strong pseudo random number generator." 
+  []
+  (str (java.util.UUID/randomUUID)))
+
 (def system-newline ;; This is in clojure.core but marked private.
   (System/getProperty "line.separator"))
 
@@ -18,20 +23,19 @@
    :body "Expected a websocket request."})
 
 (defn- handle-message [msg]
-  ;;(log/info (String. msg))
   (json/read-str (String. msg) :key-fn keyword))
 
-(defn- init-socket [stream]
-  (log/info "Initing new async socket")
+(defn- init-player [stream]
+  (log/info "Initing new player")
   (let [in-ch (async/chan (async/sliding-buffer 1) (map handle-message) #(log/error "Error in received message" %))
         out-ch (async/chan 8 (map #(.getBytes (str (json/write-str %) system-newline))) #(log/error "Error in sent message" %))
-        public-socket {:in in-ch :out out-ch}]
+        player {:in in-ch :out out-ch}]
     
     (s/connect stream in-ch)
     (s/connect out-ch stream)
 
-    (log/info "New async socket opened")
-    public-socket))
+    (log/info "New player initialized")
+    player))
 
 (defn init-websocket [req]
   (log/info "Init websocket")
@@ -43,72 +47,114 @@
         (log/info "Not websocket")
         non-websocket-request)))
 
+(defn wait-for-disconnect [stream player]
+  (let [done (async/chan)]
+    (s/on-closed stream #(async/>!! done (assoc player :disconnected? true)))
+    (async/<!! done)))
+
+(defn handshake [player]
+  (let [id (new-uuid)
+        player (assoc player :id id)]
+    (async/>!! (:out player) {:msg "Welcome!" :id id})
+    (let [{:keys [gameType maxPlayers stepTime]} (async/<!! (:in player))]
+      (assoc player :game-info {:game-type gameType :max-players maxPlayers :step-time stepTime }))))
+
+(defn stream-write [out value]
+  (async/>!! out value)
+  value)
+
+(defn handle-new-connection [stream info players]
+  (println info)
+  (async/go (->> stream
+                 init-player
+                 handshake
+                 (stream-write players)
+                 (wait-for-disconnect stream)
+                 (stream-write players)
+                 (log/info "Disconnected player" info))))
+
 (defn socket-server [port]
-  (let [connections (async/chan 50 (map init-socket))
-  		  aleph-server (tcp/start-server (fn [s _] (async/>!! connections s)) {:port port})]
+  (let [players (async/chan)
+  		  aleph-server (tcp/start-server #(handle-new-connection %1 %2 players) {:port port})]
     (log/info "Starting async server at port" port)
-    { :port port :connections connections :server aleph-server}))
+    { :port port :players players :server aleph-server}))
 
 (defn websocket-server [port]
-  (let [connections (async/chan 50 (map init-socket))
-        aleph-server (http/start-server #(let [s (init-websocket %)] (log/info "Got connection") (async/>!! connections s) s) {:port port})]
+  (let [players (async/chan)
+        aleph-server (http/start-server #(handle-new-connection (init-websocket %1) "websocket" players) {:port port})]
     (log/info "Starting async server at port" port)
-    { :port port :connections connections :server aleph-server}))
+    { :port port :players players :server aleph-server}))
 
-(defn start-game [max-players id step-time]
-  (log/info "Starting game with id" id ", max-players" max-players ", step-time" step-time)
+(defn start-ticker [step step-time out done]
+  (let [start-time (l/local-now)]
+    (async/go-loop []
+      (let [run-time (t/in-millis (t/interval start-time (l/local-now)))
+            step-time (- step-time (mod run-time step-time))]
+        (when (-> [done (async/timeout step-time)] async/alts! second (not= done))
+          ;;(log/info (str "step " @step " " (l/local-now)))
+          (swap! step inc)
+          (async/>! out {:lock (dec @step)})
+          (recur))))))
+
+(defn start-game [type max-players step-time]
+  (log/info "Starting game with type" type ", max-players" max-players ", step-time" step-time)
   (let [in (async/chan)
         out (async/chan)
         out-mult (async/mult out)
         step (atom 0)
-        start-time (l/local-now)]
+        done (async/chan)]
     
     (async/pipeline 1 out (map #(assoc % :step @step)) in)
-    
-    (async/go-loop []
-      (let [run-time (t/in-millis (t/interval start-time (l/local-now)))
-            step-time (- step-time (mod run-time step-time))]
-        (async/<! (async/timeout step-time))
-        ;;(log/info (str "step " @step " " (l/local-now)))
-        (swap! step inc)
-        (async/>! out {:lock (dec @step)})
-        (recur)))
-    
+    (start-ticker step step-time out done)
+
     {:in in 
      :out-mult out-mult 
-     :players 0
+     :players #{}
      :next-player-id 0
      :max-players max-players 
-     :id id 
+     :type type
+     :done done
      :close #(do (async/close! out) (async/close! in))}))
 
 
-(defn add-player [player-socket game]
-  (log/info "Add player to game" (:id game) "with" (:players game) "players")
-  (async/pipe (:in player-socket) (:in game) false)
-  (async/>!! (:out player-socket) {:newGame (= (:players game) 0) :playerId (:next-player-id game)})
-  (async/tap (:out-mult game) (:out player-socket))
-  (async/>!! (:in game) {:msg "New player joined" :players (inc (:players game))})
+(defn add-player [player game]
+  (log/info "Add player to game" (:type game) "with players" (:players game))
+  (async/pipe (:in player) (:in game) false)
+  (async/>!! (:out player) {:newGame (empty? (:players game)) :playerId (:next-player-id game)})
+  (async/tap (:out-mult game) (:out player))
+  (async/>!! (:in game) {:msg "New player joined" :id (:id player)})
   (-> game
-      (update :players inc)
+      (update :players conj (:id player))
       (update :next-player-id inc)))
-
 
 (defn indices [pred coll]
    (keep-indexed #(when (pred %2) %1) coll))
 
-(defn join-game [games player-socket]
-  (let [{:keys [id maxPlayers stepTime]} (async/<!! (:in player-socket))]
-    (if-let [i (first (indices #(= (:id %) id) games))]
-      (assoc games i (add-player player-socket (nth games i)))
-      (->> (start-game maxPlayers id stepTime)
-           (add-player player-socket)
+(defn join-game [games player]
+  (let [game-info (:game-info player)
+        {:keys [game-type max-players step-time]} game-info]
+    (if-let [i (first (indices #(= (:type %) game-type) games))]
+      (assoc games i (add-player player (nth games i)))
+      (->> (start-game game-type max-players step-time)
+           (add-player player)
            (conj games)))))
 
-  
+(defn quit-game [games player]
+  (let [games (map #(update % :players disj (:id player)) games)
+        { emptied true existing false } (group-by #(empty? (:players %)) games)]
+    (doall (map #(async/close! (:done %)) emptied))
+    (or existing [])))
+
+(defn join-or-quit-game [games player]
+  (if (:disconnected? player)
+    (quit-game games player)
+    (join-game games player)))
+
 (defn start-lockstep-server [socket-server websocket-server]
-  (async/go (async/reduce join-game [] (:connections websocket-server)))
-  (async/reduce join-game [] (:connections socket-server)))
+  (let [players (async/chan 1)]
+    (async/pipe (:players websocket-server) players)
+    (async/pipe (:players socket-server) players)
+    (async/reduce join-or-quit-game [] players)))
 
 (defn echo-handler [s info]
   (s/connect s s))
@@ -116,9 +162,3 @@
 (defn -main []
   (tcp/start-server echo-handler {:port 10001})
   (async/<!! (start-lockstep-server (socket-server 8888) (websocket-server 8889))))
-
-
-;;(.close (:server server))
-;;(def server (socket-server 8888))
-;;(start-lockstep-server server)
-
