@@ -127,6 +127,12 @@
       (update :players conj (:id player))
       (update :next-player-id inc)))
 
+(defn remove-player [player game]
+  (when (contains? (:players game) (:id player))
+    (async/>!! (:in game) {:msg "Player disconnected" :disconnected (:id player)})
+    (log/info "Removed player from game" (:type game) "with players" (:players game))
+    (update game :players disj (:id player))))
+
 (defn indices [pred coll]
    (keep-indexed #(when (pred %2) %1) coll))
 
@@ -140,7 +146,7 @@
            (conj games)))))
 
 (defn quit-game [games player]
-  (let [games (map #(update % :players disj (:id player)) games)
+  (let [games (map #(remove-player player %) games)
         { emptied true existing false } (group-by #(empty? (:players %)) games)]
     (doall (map #(async/close! (:done %)) emptied))
     (or existing [])))
