@@ -28,7 +28,7 @@
 (defn- init-player [stream]
   (log/info "Initing new player")
   (let [in-ch (async/chan (async/sliding-buffer 1) (map handle-message) #(log/error "Error in received message" %))
-        out-ch (async/chan 8 (map #(.getBytes (str (json/write-str %) system-newline))) #(log/error "Error in sent message" %))
+        out-ch (async/chan 64 (map #(.getBytes (str (json/write-str %) system-newline))) #(log/error "Error in sent message" %))
         player {:in in-ch :out out-ch}]
     
     (s/connect stream in-ch)
@@ -48,6 +48,7 @@
         non-websocket-request)))
 
 (defn wait-for-disconnect [stream player]
+  (log/info "wait for disconnect")
   (let [done (async/chan)]
     (s/on-closed stream #(async/>!! done (assoc player :disconnected? true)))
     (async/<!! done)))
@@ -56,16 +57,21 @@
   (let [id (new-uuid)
         player (assoc player :id id)]
     (async/>!! (:out player) {:msg "Welcome!" :id id})
-    (let [{:keys [gameType maxPlayers stepTime]} (async/<!! (:in player))]
-      (assoc player :game-info {:game-type gameType :max-players maxPlayers :step-time stepTime }))))
+    (loop []
+      (when-let [msg (async/<!! (:in player))]
+        (if (every? msg #{:gameType :maxPlayers :stepTime})
+          (assoc player :game-info (clojure.set/rename-keys msg {:gameType :game-type :maxPlayers :max-players :stepTime :step-time}))
+          (recur))))))
 
+(when "bar" "foo")
+      
 (defn stream-write [out value]
   (async/>!! out value)
   value)
 
 (defn handle-new-connection [stream info players]
   (println info)
-  (async/go (->> stream
+  (async/go (some->> stream
                  init-player
                  handshake
                  (stream-write players)
