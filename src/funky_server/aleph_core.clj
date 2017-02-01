@@ -1,9 +1,10 @@
 (ns funky-server.aleph-core  
-  (:require [clojure.java.io :as io]
-            [clojure.core.async :as async]
+  (:require [clojure.core.async :as async]
             [clojure.tools.logging :as log]
             [clojure.data.json :as json]
             [aleph.http :as http]
+            [gloss.core :as gloss]
+            [gloss.io :as gloss.io]
             [aleph.tcp :as tcp]
             [clj-time.local :as l]
             [clj-time.core :as t]
@@ -23,12 +24,12 @@
    :body "Expected a websocket request."})
 
 (defn- handle-message [msg]
-  (json/read-str (String. msg) :key-fn keyword))
+  (json/read-str msg :key-fn keyword))
 
 (defn- init-player [stream]
   (log/info "Initing new player")
   (let [in-ch (async/chan (async/sliding-buffer 1) (map handle-message) #(log/error "Error in received message" %))
-        out-ch (async/chan 64 (map #(.getBytes (str (json/write-str %) system-newline))) #(log/error "Error in sent message" %))
+        out-ch (async/chan 64 (map #(json/write-str %)) #(log/error "Error in sent message" %))
         player {:in in-ch :out out-ch}]
     
     (s/connect stream in-ch)
@@ -69,9 +70,22 @@
   (async/>!! out value)
   value)
 
+(def protocol (gloss/string :utf-8 :delimiters ["\n"]))
+
+(defn wrap-duplex-stream
+  [protocol s]
+  (let [out (s/stream)]
+    (s/connect
+      (s/map #(gloss.io/encode protocol %) out)
+      s)
+    (s/splice
+      out
+      (gloss.io/decode-stream s protocol))))
+
 (defn handle-new-connection [stream info players]
-  (println info)
+  (log/info "new connection" info)
   (async/go (some->> stream
+                 (wrap-duplex-stream protocol)
                  init-player
                  handshake
                  (stream-write players)
@@ -79,11 +93,14 @@
                  (stream-write players)
                  (log/info "Disconnected player" info))))
 
+
 (defn socket-server [port]
   (let [players (async/chan)
   		  aleph-server (tcp/start-server #(handle-new-connection %1 %2 players) {:port port})]
     (log/info "Starting async server at port" port)
     { :port port :players players :server aleph-server}))
+
+(def protocol (gloss/string :utf-8 :delimiters ["\n"]))
 
 (defn websocket-server [port]
   (let [players (async/chan)
