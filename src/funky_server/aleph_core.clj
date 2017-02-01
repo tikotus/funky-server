@@ -24,11 +24,12 @@
    :body "Expected a websocket request."})
 
 (defn- handle-message [msg]
+  (log/info msg)
   (json/read-str msg :key-fn keyword))
 
 (defn- init-player [stream]
   (log/info "Initing new player")
-  (let [in-ch (async/chan (async/sliding-buffer 1) (map handle-message) #(log/error "Error in received message" %))
+  (let [in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
         out-ch (async/chan 64 (map #(json/write-str %)) #(log/error "Error in sent message" %))
         player {:in in-ch :out out-ch}]
     
