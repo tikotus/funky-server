@@ -36,7 +36,7 @@
 
     (future (loop []
       (Thread/sleep 1000)
-      (if (> (t/in-millis (t/interval @last-msg-time (l/local-now))) 5000)
+      (if (> (t/in-millis (t/interval @last-msg-time (l/local-now))) 10000)
         (when-not (s/closed? stream) (s/close! stream))
         (recur))))
 
