@@ -23,17 +23,22 @@
    :headers {"content-type" "application/text"}
    :body "Expected a websocket request."})
 
-(defn- handle-message [msg]
-  (json/read-str msg :key-fn keyword))
-
 (defn- init-player [stream]
   (log/info "Initing new player")
-  (let [in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
+  (let [last-msg-time (atom (l/local-now))
+        handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
+        in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
         out-ch (async/chan 64 (map #(json/write-str %)) #(log/error "Error in sent message" %))
         player {:in in-ch :out out-ch}]
     
     (s/connect stream in-ch)
     (s/connect out-ch stream)
+
+    (future (loop []
+      (Thread/sleep 1000)
+      (if (> (t/in-millis (t/interval @last-msg-time (l/local-now))) 5000)
+        (when-not (s/closed? stream) (s/close! stream))
+        (recur))))
 
     (log/info "New player initialized")
     player))
