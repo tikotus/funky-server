@@ -24,7 +24,6 @@
    :body "Expected a websocket request."})
 
 (defn- handle-message [msg]
-  (log/info msg)
   (json/read-str msg :key-fn keyword))
 
 (defn- init-player [stream]
