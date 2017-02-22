@@ -69,8 +69,6 @@
           (assoc player :game-info (clojure.set/rename-keys msg {:gameType :game-type :maxPlayers :max-players :stepTime :step-time}))
           (recur))))))
 
-(when "bar" "foo")
-      
 (defn stream-write [out value]
   (async/>!! out value)
   value)
@@ -195,4 +193,5 @@
 
 (defn -main []
   (tcp/start-server echo-handler {:port 10001})
-  (async/<!! (start-lockstep-server (socket-server 8888) (websocket-server 8889))))
+  (log/info "done" (async/<!! (start-lockstep-server (socket-server 8888) (websocket-server 8889))))
+  (log/info "quit"))
