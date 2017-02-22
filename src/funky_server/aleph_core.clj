@@ -18,11 +18,6 @@
 (def system-newline ;; This is in clojure.core but marked private.
   (System/getProperty "line.separator"))
 
-(def non-websocket-request
-  {:status 400
-   :headers {"content-type" "application/text"}
-   :body "Expected a websocket request."})
-
 (defn- init-player [stream]
   (log/info "Initing new player")
   (let [last-msg-time (atom (l/local-now))
@@ -51,7 +46,7 @@
     socket
     (do 
         (log/info "Not websocket")
-        non-websocket-request)))
+        nil)))
 
 (defn wait-for-disconnect [stream player]
   (log/info "wait for disconnect")
