@@ -30,7 +30,8 @@
     (s/connect out-ch stream)
 
     (future (loop []
-      (Thread/sleep 1000)
+      (async/>!! out-ch {:ack "ok"})
+      (Thread/sleep 10)
       (if (> (t/in-millis (t/interval @last-msg-time (l/local-now))) 10000)
         (when-not (s/closed? stream) (s/close! stream))
         (recur))))
