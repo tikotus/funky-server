@@ -54,6 +54,7 @@
     (s/on-closed stream #(async/>!! done (assoc player :disconnected? true)))
     (async/<!! done)))
 
+
 (defn handshake [player]
   (let [id (new-uuid)
         player (assoc player :id id)]
@@ -187,6 +188,6 @@
   (s/connect s s))
 
 (defn -main []
-  (tcp/start-server echo-handler {:port 10001})
-  (log/info "done" (async/<!! (start-lockstep-server (socket-server 8888) (websocket-server 8889))))
+  (tcp/start-server echo-handler {:port 9120})
+  (log/info "done" (async/<!! (start-lockstep-server (socket-server 9121) (websocket-server 9122))))
   (log/info "quit"))
