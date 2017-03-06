@@ -188,6 +188,10 @@
   (s/connect s s))
 
 (defn -main []
+  (Thread/setDefaultUncaughtExceptionHandler
+   (reify Thread$UncaughtExceptionHandler
+     (uncaughtException [_ thread ex]
+       (log/error ex "Uncaught exception on" (.getName thread)))))
   (tcp/start-server echo-handler {:port 9120})
   (log/info "done" (async/<!! (start-lockstep-server (socket-server 9121) (websocket-server 9122))))
   (log/info "quit"))
