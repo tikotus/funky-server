@@ -90,7 +90,8 @@
                  (stream-write players)
                  (wait-for-disconnect stream)
                  (stream-write players)
-                 (log/info "Disconnected player" info))))
+                 (log/info "Disconnected player" info))
+    (log/info "end connection" info)))
 
 
 (defn socket-server [port]
@@ -136,13 +137,14 @@
      :max-players max-players 
      :type type
      :done done
+     :seed (rand-int 500000) ;; something big but avoids overflow
      :close #(do (async/close! out) (async/close! in))}))
 
 
 (defn add-player [player game]
   (log/info "Add player to game" (:type game) "with players" (:players game))
   (async/pipe (:in player) (:in game) false)
-  (async/>!! (:out player) {:newGame (empty? (:players game)) :playerId (:next-player-id game)})
+  (async/>!! (:out player) {:newGame (empty? (:players game)) :playerId (:next-player-id game) :seed (:seed game)})
   (async/tap (:out-mult game) (:out player))
   (async/>!! (:in game) {:msg "New player joined" :id (:id player)})
   (-> game
@@ -150,10 +152,12 @@
       (update :next-player-id inc)))
 
 (defn remove-player [player game]
-  (when (contains? (:players game) (:id player))
-    (async/>!! (:in game) {:msg "Player disconnected" :disconnected (:id player)})
-    (log/info "Removed player from game" (:type game) "with players" (:players game))
-    (update game :players disj (:id player))))
+  (if (contains? (:players game) (:id player))
+    (do 
+      (async/>!! (:in game) {:msg "Player disconnected" :disconnected (:id player)})
+      (log/info "Removed player from game" (:type game) "with players" (:players game))
+      (update game :players disj (:id player)))
+    game))
 
 (defn indices [pred coll]
    (keep-indexed #(when (pred %2) %1) coll))
@@ -161,7 +165,7 @@
 (defn join-game [games player]
   (let [game-info (:game-info player)
         {:keys [game-type max-players step-time]} game-info]
-    (if-let [i (first (indices #(= (:type %) game-type) games))]
+    (if-let [i (first (indices #(and (= (:type %) game-type) (-> % :next-player-id (< max-players))) games))]
       (assoc games i (add-player player (nth games i)))
       (->> (start-game game-type max-players step-time)
            (add-player player)
@@ -172,6 +176,7 @@
         { emptied true existing false } (group-by #(empty? (:players %)) games)]
     (doall (map #(async/close! (:done %)) emptied))
     (or existing [])))
+
 
 (defn join-or-quit-game [games player]
   (if (:disconnected? player)
