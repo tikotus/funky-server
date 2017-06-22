@@ -127,8 +127,12 @@
         step (atom 0)
         done (async/chan)]
     
-    (async/pipeline 1 out (map #(assoc % :step @step)) in)
-    (start-ticker step step-time out done)
+    
+    (if (zero? step-time)
+      (async/pipeline 1 out (filter #(-> % :alive nil?)) in) ;; Why doesn't pipe work?
+      (do 
+        (async/pipeline 1 out (map #(assoc % :step @step)) in)
+        (start-ticker step step-time out done)))
 
     {:in in 
      :out-mult out-mult 
@@ -147,6 +151,7 @@
   (async/>!! (:out player) {:newGame (empty? (:players game)) :playerId (:next-player-id game) :seed (:seed game)})
   (async/tap (:out-mult game) (:out player))
   (async/>!! (:in game) {:msg "New player joined" :id (:id player)})
+  (log/info "new player joined")
   (-> game
       (update :players conj (:id player))
       (update :next-player-id inc)))
