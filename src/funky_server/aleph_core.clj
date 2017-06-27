@@ -31,7 +31,7 @@
 
     (future (loop []
       (Thread/sleep 1000)
-      (if (> (t/in-millis (t/interval @last-msg-time (l/local-now))) 10000)
+      (if (> (t/in-millis (t/interval @last-msg-time (l/local-now))) 30000)
         (when-not (s/closed? stream) (s/close! stream))
         (recur))))
 
@@ -71,8 +71,8 @@
 
 (def protocol (gloss/string :utf-8 :delimiters ["\n"]))
 
-(defn wrap-duplex-stream
-  [protocol s]
+(defn wrap-duplex-stream [protocol s]
+  (log/info "wrap duplex stream")
   (let [out (s/stream)]
     (s/connect
       (s/map #(gloss.io/encode protocol %) out)
