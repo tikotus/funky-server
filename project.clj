@@ -10,5 +10,5 @@
                  [org.clojure/data.json "0.2.6"]
                  [http-kit "2.2.0"]
                  [clj-time "0.13.0"]
-                 [aleph "0.4.1"]
+                 [aleph "0.4.3"]
                  [gloss "0.2.5"]])
