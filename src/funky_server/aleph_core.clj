@@ -148,10 +148,10 @@
 (defn add-player [player game]
   (let [playerId (:next-player-id game)]
     (log/info "Add player to game" (:type game) "with players" (:players game))
+    (async/>!! (:in game) {:msg "New player joined" :id (:id player) :playerId playerId})
     (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
     (async/>!! (:out player) {:join true :newGame (empty? (:players game)) :playerId playerId :seed (:seed game)})
     (async/tap (:out-mult game) (:out player))
-    (async/>!! (:in game) {:msg "New player joined" :id (:id player) :playerId playerId})
     (log/info "new player joined")
     (-> game
         (update :players conj (:id player))
