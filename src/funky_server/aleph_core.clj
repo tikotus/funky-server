@@ -146,15 +146,16 @@
 
 
 (defn add-player [player game]
-  (log/info "Add player to game" (:type game) "with players" (:players game))
-  (async/pipe (:in player) (:in game) false)
-  (async/>!! (:out player) {:newGame (empty? (:players game)) :playerId (:next-player-id game) :seed (:seed game)})
-  (async/tap (:out-mult game) (:out player))
-  (async/>!! (:in game) {:msg "New player joined" :id (:id player)})
-  (log/info "new player joined")
-  (-> game
-      (update :players conj (:id player))
-      (update :next-player-id inc)))
+  (let [playerId (:next-player-id game)]
+    (log/info "Add player to game" (:type game) "with players" (:players game))
+    (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
+    (async/>!! (:out player) {:join true :newGame (empty? (:players game)) :playerId playerId :seed (:seed game)})
+    (async/tap (:out-mult game) (:out player))
+    (async/>!! (:in game) {:msg "New player joined" :id (:id player)})
+    (log/info "new player joined")
+    (-> game
+        (update :players conj (:id player))
+        (update :next-player-id inc))))
 
 (defn remove-player [player game]
   (if (contains? (:players game) (:id player))
