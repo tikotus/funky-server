@@ -129,9 +129,9 @@
     
     
     (if (zero? step-time)
-      (async/pipeline 1 out (filter #(-> % :alive nil?)) in) ;; Why doesn't pipe work?
+      (async/pipeline 1 out (filter #(-> % :alive nil?)) in)
       (do 
-        (async/pipeline 1 out (map #(assoc % :step @step)) in)
+        (async/pipeline 1 out (comp (filter #(-> % :alive nil?)) (map #(assoc % :step @step))) in)
         (start-ticker step step-time out done)))
 
     {:in in 
@@ -151,7 +151,7 @@
     (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
     (async/>!! (:out player) {:join true :newGame (empty? (:players game)) :playerId playerId :seed (:seed game)})
     (async/tap (:out-mult game) (:out player))
-    (async/>!! (:in game) {:msg "New player joined" :id (:id player)})
+    (async/>!! (:in game) {:msg "New player joined" :id (:id player) :playerId playerId})
     (log/info "new player joined")
     (-> game
         (update :players conj (:id player))
