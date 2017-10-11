@@ -83,7 +83,9 @@
 
 (defn handle-new-connection [stream info players]
   (log/info "new connection" info)
-  (async/go (some->> stream
+  (async/go 
+    (log/info "start go block")
+    (some->> stream
                  (wrap-duplex-stream protocol)
                  init-player
                  handshake
@@ -119,23 +121,29 @@
           (async/>! out {:lock (dec @step)})
           (recur))))))
 
+(defn choose-topic [msg]
+  (case (:msg msg) 
+    "sync" :sync 
+    "join" :join 
+    :other))
+
 (defn start-game [type max-players step-time]
   (log/info "Starting game with type" type ", max-players" max-players ", step-time" step-time)
   (let [in (async/chan)
         out (async/chan)
-        out-mult (async/mult out)
+        out-pub (async/pub out choose-topic)
         step (atom 0)
         done (async/chan)]
     
-    
     (if (zero? step-time)
       (async/pipeline 1 out (filter #(-> % :alive nil?)) in)
-      (do 
-        (async/pipeline 1 out (comp (filter #(-> % :alive nil?)) (map #(assoc % :step @step))) in)
+      (let [alive-filter (filter #(-> % :alive nil?))
+            add-step-map (map #(assoc % :step @step))] 
+        (async/pipeline 1 out (comp alive-filter add-step-map) in)
         (start-ticker step step-time out done)))
 
     {:in in 
-     :out-mult out-mult 
+     :out-pub out-pub
      :players #{}
      :next-player-id 0
      :max-players max-players 
@@ -145,14 +153,29 @@
      :close #(do (async/close! out) (async/close! in))}))
 
 
+(defn request-sync [player, game]
+  (let [sync-chan (async/chan (async/sliding-buffer 1))]
+    (async/sub (:out-pub game) :sync sync-chan)
+    (async/go-loop []
+      (async/>! (:in game) {:msg "join"})
+      (let [[val ch] (async/alts! [sync-chan (async/timeout 2000)])]
+        (if (identical? sync-chan ch)
+          (do (async/>! (:out player) val)
+              (async/unsub (:out-pub game) :sync sync-chan)
+              "ok")
+          (recur))))))
+
 (defn add-player [player game]
-  (let [playerId (:next-player-id game)]
+  (let [playerId (:next-player-id game)
+        newGame? (empty? (:players game))]
     (log/info "Add player to game" (:type game) "with players" (:players game))
-    (async/>!! (:in game) {:msg "New player joined" :id (:id player) :playerId playerId})
-    (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
-    (async/>!! (:out player) {:join true :newGame (empty? (:players game)) :playerId playerId :seed (:seed game)})
-    (async/tap (:out-mult game) (:out player))
-    (log/info "new player joined")
+    (async/go
+      (async/sub (:out-pub game) :other (:out player))
+      (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
+      (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
+      (when-not newGame? (log/info (async/<!! (request-sync player game))))
+      (async/sub (:out-pub game) :join (:out player))
+      (log/info "new player joined"))
     (-> game
         (update :players conj (:id player))
         (update :next-player-id inc))))
