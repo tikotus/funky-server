@@ -23,7 +23,7 @@
   (let [last-msg-time (atom (l/local-now))
         handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
         in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
-        out-ch (async/chan 64 (map #(json/write-str %)) #(log/error "Error in sent message" %))
+        out-ch (async/chan (async/dropping-buffer 128) (map #(json/write-str %)) #(log/error "Error in sent message" %))
         player {:in (async/pipe in-ch (async/chan) false) :out out-ch}]
     
     (s/connect stream in-ch)
