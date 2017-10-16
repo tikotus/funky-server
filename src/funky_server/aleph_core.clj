@@ -51,25 +51,28 @@
 (defn wait-for-disconnect [stream player]
   (log/info "wait for disconnect")
   (let [done (async/chan)]
-    (s/on-closed stream #(async/>!! done (assoc player :disconnected? true)))
-    (async/<!! done)))
+    (async/go
+      (s/on-closed stream #(async/>!! done (assoc player :disconnected? true)))
+      (async/<! done))))
 
 
 (defn handshake [player]
   (let [id (new-uuid)
         player (assoc player :id id)]
-    (async/>!! (:out player) {:msg "Welcome!" :id id})
-    (loop []
-      (let [msg (async/<!! (:in player))]
-        (if (nil? msg)
-          (log/info "Dead")
-          (if (every? msg #{:gameType :maxPlayers :stepTime})
-            (assoc player :game-info (clojure.set/rename-keys msg {:gameType :game-type :maxPlayers :max-players :stepTime :step-time}))
-            (recur)))))))
+    (async/go
+      (async/>! (:out player) {:msg "Welcome!" :id id})
+      (loop []
+        (let [msg (async/<! (:in player))]
+          (if (nil? msg)
+            nil
+            (if (every? msg #{:gameType :maxPlayers :stepTime})
+              (assoc player :game-info (clojure.set/rename-keys msg {:gameType :game-type :maxPlayers :max-players :stepTime :step-time}))
+              (recur))))))))
 
 (defn stream-write [out value]
-  (async/>!! out value)
-  value)
+  (async/go
+    (async/>! out value)
+    value))
 
 (def protocol (gloss/string :utf-8 :delimiters ["\n"]))
 
@@ -90,10 +93,10 @@
     (some->> stream
              (wrap-duplex-stream protocol)
              init-player
-             handshake
-             (stream-write players)
-             (wait-for-disconnect stream)
-             (stream-write players)
+             (handshake) (async/<!)
+             (stream-write players) (async/<!)
+             (wait-for-disconnect stream) (async/<!)
+             (stream-write players) (async/<!)
              (log/info "Disconnected player" info))
     (log/info "end connection" info)))
 
