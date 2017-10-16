@@ -86,13 +86,13 @@
   (async/go 
     (log/info "start go block")
     (some->> stream
-                 (wrap-duplex-stream protocol)
-                 init-player
-                 handshake
-                 (stream-write players)
-                 (wait-for-disconnect stream)
-                 (stream-write players)
-                 (log/info "Disconnected player" info))
+             (wrap-duplex-stream protocol)
+             init-player
+             handshake
+             (stream-write players)
+             (wait-for-disconnect stream)
+             (stream-write players)
+             (log/info "Disconnected player" info))
     (log/info "end connection" info)))
 
 
@@ -110,7 +110,7 @@
     (log/info "Starting async server at port" port)
     { :port port :players players :server aleph-server}))
 
-(defn start-ticker [step step-time out done]
+(defn start-ticker [step step-time out done join-ch]
   (let [start-time (l/local-now)]
     (async/go-loop []
       (let [run-time (t/in-millis (t/interval start-time (l/local-now)))
@@ -118,7 +118,9 @@
         (when (-> [done (async/timeout step-time)] async/alts! second (not= done))
           ;;(log/info (str "step " @step " " (l/local-now)))
           (swap! step inc)
-          (async/>! out {:lock (dec @step)})
+          (let [lock-msg {:lock (dec @step)}
+                join-msg (async/poll! join-ch)]
+            (async/>! out (if (nil? join-msg) [lock-msg] [lock-msg (assoc join-msg :step (dec @step))])))
           (recur))))))
 
 (defn choose-topic [msg]
@@ -130,19 +132,22 @@
 (defn start-game [type max-players step-time]
   (log/info "Starting game with type" type ", max-players" max-players ", step-time" step-time)
   (let [in (async/chan)
-        out (async/chan)
+        out (async/chan 1 cat)
         out-pub (async/pub out choose-topic)
+        join-ch (async/chan 8)
         step (atom 0)
         done (async/chan)]
     
     (if (zero? step-time)
       (async/pipeline 1 out (filter #(-> % :alive nil?)) in)
       (let [alive-filter (filter #(-> % :alive nil?))
-            add-step-map (map #(assoc % :step @step))] 
-        (async/pipeline 1 out (comp alive-filter add-step-map) in)
-        (start-ticker step step-time out done)))
+            add-step-map (map #(assoc % :step @step))
+            add-vec-map (map #(identity [%]))]
+        (async/pipeline 1 out (comp alive-filter add-step-map add-vec-map) in)
+        (start-ticker step step-time out done join-ch)))
 
-    {:in in 
+    {:in in
+     :join-ch join-ch
      :out-pub out-pub
      :players #{}
      :next-player-id 0
@@ -156,7 +161,7 @@
 (defn request-sync [player game]
   (let [sync-chan (async/chan (async/sliding-buffer 1))]
     (async/sub (:out-pub game) :sync sync-chan)
-    (async/>!! (:in game) {:msg "join"})
+    (async/>!! (:join-ch game) {:msg "join"})
     (async/>!! (:out player) (async/<!! sync-chan))))
 
 (defn request-sync-loop [player game]
