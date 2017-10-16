@@ -29,11 +29,11 @@
     (s/connect stream in-ch)
     (s/connect out-ch stream)
 
-    (future (loop []
-      (Thread/sleep 1000)
+    (async/go-loop []
+      (async/<! (async/timeout 1000))
       (if (> (t/in-millis (t/interval @last-msg-time (l/local-now))) 30000)
         (when-not (s/closed? stream) (s/close! stream))
-        (recur))))
+        (recur)))
 
     (log/info "New player initialized")
     player))
