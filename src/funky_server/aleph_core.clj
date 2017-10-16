@@ -153,7 +153,13 @@
      :close #(do (async/close! out) (async/close! in))}))
 
 
-(defn request-sync [player, game]
+(defn request-sync [player game]
+  (let [sync-chan (async/chan (async/sliding-buffer 1))]
+    (async/sub (:out-pub game) :sync sync-chan)
+    (async/>!! (:in game) {:msg "join"})
+    (async/<!! sync-chan)))
+
+(defn request-sync-loop [player game]
   (let [sync-chan (async/chan (async/sliding-buffer 1))]
     (async/sub (:out-pub game) :sync sync-chan)
     (async/go-loop []
