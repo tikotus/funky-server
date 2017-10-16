@@ -183,7 +183,7 @@
 (defn remove-player [player game]
   (if (contains? (:players game) (:id player))
     (do 
-      (async/>!! (:in player) {:disconnected})
+      (async/>!! (:in player) {:disconnected (:id player)})
       (update game :players disj (:id player))
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game)))
     game))
