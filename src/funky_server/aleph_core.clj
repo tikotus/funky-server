@@ -157,6 +157,7 @@
      :join-ch join-ch
      :out-pub out-pub
      :players #{}
+     :synced-players (atom #{})
      :next-player-id 0
      :max-players max-players 
      :type type
@@ -173,7 +174,7 @@
       (async/<! lock-chan) ; Read one lock before syncing to ensure client has all messages for the step
       (async/unsub (:out-pub game) :lock lock-chan)
       (async/sub (:out-pub game) :sync sync-chan)
-      (async/>! (:join-ch game) {:msg "join"})
+      (async/>! (:join-ch game) {:msg "join" :syncer (rand-nth (into [] @(:synced-players game)))})
       (async/>! (:out player) (async/<! sync-chan))
       (async/unsub (:out-pub game) :sync sync-chan))))
 
@@ -181,7 +182,7 @@
   (let [sync-chan (async/chan (async/sliding-buffer 1))]
     (async/sub (:out-pub game) :sync sync-chan)
     (async/go-loop []
-      (async/>! (:in game) {:msg "join"})
+      (async/>! (:in game) {:msg "join" :syncer (rand-nth (into [] @(:synced-players game)))})
       (let [[val ch] (async/alts! [sync-chan (async/timeout 2000)])]
         (if (identical? sync-chan ch)
           (do (async/>! (:out player) val)
@@ -199,6 +200,7 @@
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
       (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (async/merge [(:in player) (:in-local player)]) false)
       (when-not newGame? (async/<! (request-sync player game)))
+      (swap! (:synced-players game) #(conj % (:id player)))
       (async/sub (:out-pub game) :join (:out player))
       (log/info "new player joined"))
     (-> game
@@ -210,6 +212,7 @@
     (do 
       (async/put! (:in-local player) {:disconnected (:id player)})
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
+      (swap! (:synced-players game) #(disj % (:id player)))
       (update game :players disj (:id player)))
     game))
 
