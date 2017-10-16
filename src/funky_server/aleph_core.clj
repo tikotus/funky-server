@@ -24,7 +24,7 @@
         handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
         in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
         out-ch (async/chan 64 (map #(json/write-str %)) #(log/error "Error in sent message" %))
-        player {:in in-ch :out out-ch}]
+        player {:in (async/pipe in-ch (async/chan) false) :out out-ch}]
     
     (s/connect stream in-ch)
     (s/connect out-ch stream)
@@ -173,7 +173,7 @@
       (async/sub (:out-pub game) :other (:out player))
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
       (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
-      (when-not newGame? (log/info (async/<!! (request-sync player game))))
+      (when-not newGame? (async/<!! (request-sync player game)))
       (async/sub (:out-pub game) :join (:out player))
       (log/info "new player joined"))
     (-> game
@@ -184,8 +184,8 @@
   (if (contains? (:players game) (:id player))
     (do 
       (async/>!! (:in player) {:disconnected (:id player)})
-      (update game :players disj (:id player))
-      (log/info "Removed player from game" (:type game) "Remaining players" (:players game)))
+      (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
+      (update game :players disj (:id player)))
     game))
 
 (defn indices [pred coll]
