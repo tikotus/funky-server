@@ -183,9 +183,9 @@
 (defn remove-player [player game]
   (if (contains? (:players game) (:id player))
     (do 
-      (async/>!! (:in game) {:msg "Player disconnected" :disconnected (:id player)})
-      (log/info "Removed player from game" (:type game) "with players" (:players game))
-      (update game :players disj (:id player)))
+      (async/>!! (:in player) {:disconnected})
+      (update game :players disj (:id player))
+      (log/info "Removed player from game" (:type game) "Remaining players" (:players game)))
     game))
 
 (defn indices [pred coll]
