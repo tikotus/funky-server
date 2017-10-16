@@ -24,7 +24,7 @@
         handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
         in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
         out-ch (async/chan (async/dropping-buffer 128) (map #(json/write-str %)) #(log/error "Error in sent message" %))
-        player {:in (async/pipe in-ch (async/chan) false) :out out-ch}]
+        player {:in-local (async/chan) :in in-ch :out out-ch}]
     
     (s/connect stream in-ch)
     (s/connect out-ch stream)
@@ -60,10 +60,12 @@
         player (assoc player :id id)]
     (async/>!! (:out player) {:msg "Welcome!" :id id})
     (loop []
-      (when-let [msg (async/<!! (:in player))]
-        (if (every? msg #{:gameType :maxPlayers :stepTime})
-          (assoc player :game-info (clojure.set/rename-keys msg {:gameType :game-type :maxPlayers :max-players :stepTime :step-time}))
-          (recur))))))
+      (let [msg (async/<!! (:in player))]
+        (if (nil? msg)
+          (log/info "Dead")
+          (if (every? msg #{:gameType :maxPlayers :stepTime})
+            (assoc player :game-info (clojure.set/rename-keys msg {:gameType :game-type :maxPlayers :max-players :stepTime :step-time}))
+            (recur)))))))
 
 (defn stream-write [out value]
   (async/>!! out value)
@@ -192,7 +194,7 @@
       (async/sub (:out-pub game) :other (:out player))
       (async/sub (:out-pub game) :lock (:out player))
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
-      (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
+      (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (async/merge [(:in player) (:in-local player)]) false)
       (when-not newGame? (async/<! (request-sync player game)))
       (async/sub (:out-pub game) :join (:out player))
       (log/info "new player joined"))
@@ -203,7 +205,7 @@
 (defn remove-player [player game]
   (if (contains? (:players game) (:id player))
     (do 
-      (async/>!! (:in player) {:disconnected (:id player)})
+      (async/>!! (:in-local player) {:disconnected (:id player)})
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
       (update game :players disj (:id player)))
     game))
