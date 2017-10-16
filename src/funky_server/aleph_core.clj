@@ -52,7 +52,7 @@
   (log/info "wait for disconnect")
   (let [done (async/chan)]
     (async/go
-      (s/on-closed stream #(async/>!! done (assoc player :disconnected? true)))
+      (s/on-closed stream #(async/put! done (assoc player :disconnected? true)))
       (async/<! done))))
 
 
@@ -174,7 +174,7 @@
       (async/unsub (:out-pub game) :lock lock-chan)
       (async/sub (:out-pub game) :sync sync-chan)
       (async/>! (:join-ch game) {:msg "join"})
-      (async/>! (:out player) (async/<!! sync-chan))
+      (async/>! (:out player) (async/<! sync-chan))
       (async/unsub (:out-pub game) :sync sync-chan))))
 
 (defn request-sync-loop [player game]
@@ -208,7 +208,7 @@
 (defn remove-player [player game]
   (if (contains? (:players game) (:id player))
     (do 
-      (async/>!! (:in-local player) {:disconnected (:id player)})
+      (async/put! (:in-local player) {:disconnected (:id player)})
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
       (update game :players disj (:id player)))
     game))
