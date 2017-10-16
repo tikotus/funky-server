@@ -164,10 +164,8 @@
   (let [sync-chan (async/chan (async/sliding-buffer 1))
         lock-chan (async/chan)]
     (async/sub (:out-pub game) :lock lock-chan)
-    (log/info "Wait for lock")
     (async/<!! lock-chan) ; Read one lock before syncing to ensure client has all messages for the step
     (async/unsub (:out-pub game) :lock lock-chan)
-    (log/info "Got lock")
     (async/sub (:out-pub game) :sync sync-chan)
     (async/>!! (:join-ch game) {:msg "join"})
     (async/>!! (:out player) (async/<!! sync-chan))
