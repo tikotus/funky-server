@@ -124,10 +124,12 @@
           (recur))))))
 
 (defn choose-topic [msg]
-  (case (:msg msg) 
-    "sync" :sync 
-    "join" :join 
-    :other))
+  (if (contains? msg :lock)
+    :lock
+    (case (:msg msg) 
+      "sync" :sync 
+      "join" :join 
+      :other)))
 
 (defn start-game [type max-players step-time]
   (log/info "Starting game with type" type ", max-players" max-players ", step-time" step-time)
@@ -159,10 +161,17 @@
 
 
 (defn request-sync [player game]
-  (let [sync-chan (async/chan (async/sliding-buffer 1))]
+  (let [sync-chan (async/chan (async/sliding-buffer 1))
+        lock-chan (async/chan)]
+    (async/sub (:out-pub game) :lock lock-chan)
+    (log/info "Wait for lock")
+    (async/<!! lock-chan) ; Read one lock before syncing to ensure client has all messages for the step
+    (async/unsub (:out-pub game) :lock lock-chan)
+    (log/info "Got lock")
     (async/sub (:out-pub game) :sync sync-chan)
     (async/>!! (:join-ch game) {:msg "join"})
-    (async/>!! (:out player) (async/<!! sync-chan))))
+    (async/>!! (:out player) (async/<!! sync-chan))
+    (async/unsub (:out-pub game) :sync sync-chan)))
 
 (defn request-sync-loop [player game]
   (let [sync-chan (async/chan (async/sliding-buffer 1))]
@@ -182,6 +191,7 @@
     (log/info "Add player to game" (:type game) "with players" (:players game))
     (async/go
       (async/sub (:out-pub game) :other (:out player))
+      (async/sub (:out-pub game) :lock (:out player))
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
       (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
       (when-not newGame? (request-sync player game))
