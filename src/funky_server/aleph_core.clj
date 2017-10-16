@@ -157,7 +157,7 @@
   (let [sync-chan (async/chan (async/sliding-buffer 1))]
     (async/sub (:out-pub game) :sync sync-chan)
     (async/>!! (:in game) {:msg "join"})
-    (async/<!! sync-chan)))
+    (async/>!! (:out player) (async/<!! sync-chan))))
 
 (defn request-sync-loop [player game]
   (let [sync-chan (async/chan (async/sliding-buffer 1))]
@@ -179,7 +179,7 @@
       (async/sub (:out-pub game) :other (:out player))
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
       (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (:in player) false)
-      (when-not newGame? (async/<!! (request-sync player game)))
+      (when-not newGame? (request-sync player game))
       (async/sub (:out-pub game) :join (:out player))
       (log/info "new player joined"))
     (-> game
