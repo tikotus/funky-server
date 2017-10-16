@@ -222,7 +222,7 @@
 (defn join-game [games player]
   (let [game-info (:game-info player)
         {:keys [game-type max-players step-time]} game-info]
-    (if-let [i (first (indices #(and (= (:type %) game-type) (-> % :next-player-id (< max-players))) games))]
+    (if-let [i (first (indices #(and (= (:type %) game-type) (-> % :players count (< max-players))) games))]
       (assoc games i (add-player player (nth games i)))
       (->> (start-game game-type max-players step-time)
            (add-player player)
