@@ -182,7 +182,7 @@
   (let [sync-chan (async/chan (async/sliding-buffer 1))]
     (async/sub (:out-pub game) :sync sync-chan)
     (async/go-loop []
-      (async/>! (:in game) {:msg "join" :syncer (rand-nth (into [] @(:synced-players game)))})
+      (async/>! (:in game) {:msg "join" :syncer (rand-nth (seq @(:synced-players game)))})
       (let [[val ch] (async/alts! [sync-chan (async/timeout 2000)])]
         (if (identical? sync-chan ch)
           (do (async/>! (:out player) val)
