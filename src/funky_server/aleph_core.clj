@@ -24,7 +24,7 @@
         handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
         in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
         out-ch (async/chan (async/dropping-buffer 128) (map #(json/write-str %)) #(log/error "Error in sent message" %))
-        player {:in-local (async/chan) :in in-ch :out out-ch}]
+        player {:in-local (async/chan) :in in-ch :out out-ch :last-msg-time last-msg-time}]
     
     (s/connect stream in-ch)
     (s/connect out-ch stream)
@@ -157,7 +157,7 @@
      :join-ch join-ch
      :out-pub out-pub
      :players #{}
-     :synced-players (atom #{})
+     :synced-players (atom [])
      :next-player-id 0
      :max-players max-players 
      :type type
@@ -165,6 +165,16 @@
      :seed (rand-int 500000) ;; something big but avoids overflow
      :close #(do (async/close! out) (async/close! in))}))
 
+
+(defn active? [player]
+  (< (t/in-millis (t/interval @(:last-msg-time player) (l/local-now))) 
+     2000))
+
+(defn pick-syncer [game]
+  (let [active (filter active? @(:synced-players game))]
+    (if (> (count active) 0)
+      (:id (rand-nth active))
+      nil)))
 
 (defn request-sync [player game]
   (let [sync-chan (async/chan (async/sliding-buffer 1))
@@ -174,7 +184,7 @@
       (async/<! lock-chan) ; Read one lock before syncing to ensure client has all messages for the step
       (async/unsub (:out-pub game) :lock lock-chan)
       (async/sub (:out-pub game) :sync sync-chan)
-      (async/>! (:join-ch game) {:msg "join" :syncer (rand-nth (into [] @(:synced-players game)))})
+      (async/>! (:join-ch game) {:msg "join" :syncer (pick-syncer game)})
       (async/>! (:out player) (async/<! sync-chan))
       (async/unsub (:out-pub game) :sync sync-chan))))
 
@@ -200,7 +210,7 @@
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
       (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (async/merge [(:in player) (:in-local player)]) false)
       (when-not newGame? (async/<! (request-sync player game)))
-      (swap! (:synced-players game) #(conj % (:id player)))
+      (swap! (:synced-players game) #(conj % player))
       (async/sub (:out-pub game) :join (:out player))
       (log/info "new player joined"))
     (-> game
@@ -212,17 +222,26 @@
     (do 
       (async/put! (:in-local player) {:disconnected (:id player)})
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
-      (swap! (:synced-players game) #(disj % (:id player)))
+      (swap! (:synced-players game) (fn [players] (filter #(not= (:id %) (:id player)) players)))
+      (log/info "Remaining synced-players" (count @(:synced-players game)))
       (update game :players disj (:id player)))
     game))
 
 (defn indices [pred coll]
    (keep-indexed #(when (pred %2) %1) coll))
 
+(defn valid-game? [game-info game]
+  (and (= (:type game) (:game-type game-info)) 
+       (-> game :players count (< (:max-players game-info)))
+       (not (nil? (pick-syncer game)))))
+
+(defn pick-game-index [game-info games]
+  (first (indices #(valid-game? game-info %) games)))
+
 (defn join-game [games player]
   (let [game-info (:game-info player)
         {:keys [game-type max-players step-time]} game-info]
-    (if-let [i (first (indices #(and (= (:type %) game-type) (-> % :players count (< max-players))) games))]
+    (if-let [i (pick-game-index game-info games)]
       (assoc games i (add-player player (nth games i)))
       (->> (start-game game-type max-players step-time)
            (add-player player)
