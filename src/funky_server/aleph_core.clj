@@ -178,9 +178,10 @@
 
 (defn read-topic [m topic]
   (let [c (async/tap m (async/chan (async/sliding-buffer 1)))]
-    (async/go-loop []
-      (when-not (= (choose-topic (async/<! c)) topic)
-        (recur)))))
+    (async/go-loop [msg (async/<! c)]
+      (if (= (choose-topic msg) topic)
+        msg
+        (recur (async/<! c))))))
 
 (defn request-sync [player game]
   (let [sync-chan (async/chan (async/sliding-buffer 1))
