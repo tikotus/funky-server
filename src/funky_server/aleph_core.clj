@@ -23,7 +23,7 @@
   (let [last-msg-time (atom (l/local-now))
         handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
         in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
-        out-ch (async/chan (async/dropping-buffer 128) (map #(json/write-str %)) #(log/error "Error in sent message" %))
+        out-ch (async/chan (async/dropping-buffer 1028) (map #(json/write-str %)) #(log/error "Error in sent message" %))
         player {:in-local (async/chan) :in in-ch :out out-ch :last-msg-time last-msg-time}]
     
     (s/connect stream in-ch)
@@ -140,7 +140,7 @@
   (log/info "Starting game with type" type ", max-players" max-players ", step-time" step-time)
   (let [in (async/chan)
         out (async/chan 1 cat)
-        out-pub (async/pub out choose-topic)
+        out-mult (async/mult out)
         join-ch (async/chan 8)
         step (atom 0)
         done (async/chan)]
@@ -155,7 +155,7 @@
 
     {:in in
      :join-ch join-ch
-     :out-pub out-pub
+     :out-mult out-mult
      :players #{}
      :synced-players (atom [])
      :next-player-id 0
@@ -176,42 +176,30 @@
       (:id (rand-nth active))
       nil)))
 
+(defn read-topic [m topic]
+  (let [c (async/tap m (async/chan (async/sliding-buffer 1)))]
+    (async/go-loop []
+      (when-not (= (choose-topic (async/<! c)) topic)
+        (recur)))))
+
 (defn request-sync [player game]
   (let [sync-chan (async/chan (async/sliding-buffer 1))
         lock-chan (async/chan)]
     (async/go
-      (async/sub (:out-pub game) :lock lock-chan)
-      (async/<! lock-chan) ; Read one lock before syncing to ensure client has all messages for the step
-      (async/unsub (:out-pub game) :lock lock-chan)
-      (async/sub (:out-pub game) :sync sync-chan)
+      (async/<! (read-topic (:out-mult game) :lock)); Read one lock before syncing to ensure client has all messages for the step
       (async/>! (:join-ch game) {:msg "join" :syncer (pick-syncer game)})
-      (async/>! (:out player) (async/<! sync-chan))
-      (async/unsub (:out-pub game) :sync sync-chan))))
-
-(defn request-sync-loop [player game]
-  (let [sync-chan (async/chan (async/sliding-buffer 1))]
-    (async/sub (:out-pub game) :sync sync-chan)
-    (async/go-loop []
-      (async/>! (:in game) {:msg "join" :syncer (rand-nth (seq @(:synced-players game)))})
-      (let [[val ch] (async/alts! [sync-chan (async/timeout 2000)])]
-        (if (identical? sync-chan ch)
-          (do (async/>! (:out player) val)
-              (async/unsub (:out-pub game) :sync sync-chan)
-              "ok")
-          (recur))))))
+      (async/>! (:out player) (async/<! (read-topic (:out-mult game) :sync))))))
 
 (defn add-player [player game]
   (let [playerId (:next-player-id game)
         newGame? (empty? (:players game))]
     (log/info "Add player to game" (:type game) "with players" (:players game))
     (async/go
-      (async/sub (:out-pub game) :other (:out player))
-      (async/sub (:out-pub game) :lock (:out player))
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
+      (async/tap (:out-mult game) (:out player))
       (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (async/merge [(:in player) (:in-local player)]) false)
       (when-not newGame? (async/<! (request-sync player game)))
       (swap! (:synced-players game) #(conj % player))
-      (async/sub (:out-pub game) :join (:out player))
       (log/info "new player joined"))
     (-> game
         (update :players conj (:id player))
