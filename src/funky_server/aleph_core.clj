@@ -19,15 +19,16 @@
   (System/getProperty "line.separator"))
 
 (defn- init-player [stream]
-  (log/info "Initing new player")
   (let [last-msg-time (atom (l/local-now))
         handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
         in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
-        out-ch (async/chan (async/dropping-buffer 1028) (map #(json/write-str %)) #(log/error "Error in sent message" %))
-        player {:in-local (async/chan) :in in-ch :out out-ch :last-msg-time last-msg-time}]
+        out-ch (async/chan (async/dropping-buffer 256) (map #(json/write-str %)) #(log/error "Error in sent message" %))
+        out-raw-ch (async/chan (async/dropping-buffer 256))
+        player {:in-local (async/chan) :in in-ch :out out-ch :out-raw out-raw-ch :last-msg-time last-msg-time}]
     
+    (async/pipe out-ch out-raw-ch)
     (s/connect stream in-ch)
-    (s/connect out-ch stream)
+    (s/connect out-raw-ch stream)
 
     (async/go-loop []
       (async/<! (async/timeout 1000))
@@ -39,7 +40,6 @@
     player))
 
 (defn init-websocket [req]
-  (log/info "Init websocket")
   (if-let [socket (try
                     @(http/websocket-connection req {:headers {:Sec-WebSocket-Protocol "binary"}})
                     (catch Exception e nil))]
@@ -49,7 +49,6 @@
         nil)))
 
 (defn wait-for-disconnect [stream player]
-  (log/info "wait for disconnect")
   (let [done (async/chan)]
     (async/go
       (s/on-closed stream #(async/put! done (assoc player :disconnected? true)))
@@ -77,7 +76,6 @@
 (def protocol (gloss/string :utf-8 :delimiters ["\n"]))
 
 (defn wrap-duplex-stream [protocol s]
-  (log/info "wrap duplex stream")
   (let [out (s/stream)]
     (s/connect
       (s/map #(gloss.io/encode protocol %) out)
@@ -89,7 +87,6 @@
 (defn handle-new-connection [stream info players]
   (log/info "new connection" info)
   (async/go 
-    (log/info "start go block")
     (some->> stream
              (wrap-duplex-stream protocol)
              init-player
@@ -139,23 +136,31 @@
 (defn start-game [type max-players step-time]
   (log/info "Starting game with type" type ", max-players" max-players ", step-time" step-time)
   (let [in (async/chan)
+        in-mult (async/mult in)
         out (async/chan 1 cat)
         out-mult (async/mult out)
+        out-raw (async/tap out-mult (async/chan 1 (map #(json/write-str %)) #(log/error "Error in sent message" %)))
+        out-raw-mult (async/mult out-raw)
+        out-sync (async/tap in-mult (async/chan (async/dropping-buffer 1) (filter #(-> % :msg (= "sync")))))
+        out-sync-mult (async/mult out-sync)
         join-ch (async/chan 8)
         step (atom 0)
         done (async/chan)]
     
     (if (zero? step-time)
-      (async/pipeline 1 out (filter #(-> % :alive nil?)) in)
+      (async/pipeline 1 out (filter #(-> % :alive nil?)) (async/tap in-mult (async/chan))) ;; simple case for stepless games
       (let [alive-filter (filter #(-> % :alive nil?))
-            add-step-map (map #(assoc % :step @step))
-            add-vec-map (map #(identity [%]))]
-        (async/pipeline 1 out (comp alive-filter add-step-map add-vec-map) in)
+            sync-filter (filter #(-> % :msg (not= "sync")))
+            map-step (map #(assoc % :step @step))
+            map-vec (map #(identity [%]))]
+        (async/pipeline 1 out (comp alive-filter sync-filter map-step map-vec) (async/tap in-mult (async/chan)))
         (start-ticker step step-time out done join-ch)))
 
     {:in in
      :join-ch join-ch
      :out-mult out-mult
+     :out-raw-mult out-raw-mult
+     :out-sync-mult out-sync-mult
      :players #{}
      :synced-players (atom [])
      :next-player-id 0
@@ -177,19 +182,16 @@
       nil)))
 
 (defn read-topic [m topic]
-  (let [c (async/tap m (async/chan (async/sliding-buffer 1)))]
+  (let [c (async/tap m (async/chan (async/sliding-buffer 8)))]
     (async/go-loop [msg (async/<! c)]
       (if (= (choose-topic msg) topic)
         msg
         (recur (async/<! c))))))
 
 (defn request-sync [player game]
-  (let [sync-chan (async/chan (async/sliding-buffer 1))
-        lock-chan (async/chan)]
-    (async/go
-      (async/<! (read-topic (:out-mult game) :lock)); Read one lock before syncing to ensure client has all messages for the step
-      (async/>! (:join-ch game) {:msg "join" :syncer (pick-syncer game)})
-      (async/>! (:out player) (async/<! (read-topic (:out-mult game) :sync))))))
+  (async/go
+    (async/>! (:join-ch game) {:msg "join" :syncer (pick-syncer game)})
+    (async/>! (:out player) (async/<! (read-topic (:out-sync-mult game) :sync)))))
 
 (defn add-player [player game]
   (let [playerId (:next-player-id game)
@@ -197,11 +199,10 @@
     (log/info "Add player to game" (:type game) "with players" (:players game))
     (async/go
       (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
-      (async/tap (:out-mult game) (:out player))
+      (async/tap (:out-raw-mult game) (:out-raw player))
       (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (async/merge [(:in player) (:in-local player)]) false)
       (when-not newGame? (async/<! (request-sync player game)))
-      (swap! (:synced-players game) #(conj % player))
-      (log/info "new player joined"))
+      (swap! (:synced-players game) #(conj % player)))
     (-> game
         (update :players conj (:id player))
         (update :next-player-id inc))))
@@ -212,7 +213,6 @@
       (async/put! (:in-local player) {:disconnected (:id player)})
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
       (swap! (:synced-players game) (fn [players] (filter #(not= (:id %) (:id player)) players)))
-      (log/info "Remaining synced-players" (count @(:synced-players game)))
       (update game :players disj (:id player)))
     game))
 
@@ -263,5 +263,5 @@
      (uncaughtException [_ thread ex]
        (log/error ex "Uncaught exception on" (.getName thread)))))
   (tcp/start-server echo-handler {:port 9120})
-  (log/info "done" (async/<!! (start-lockstep-server (socket-server 9121) (websocket-server 9122))))
+  (log/info "server done" (async/<!! (start-lockstep-server (socket-server 9121) (websocket-server 9122))))
   (log/info "quit"))
