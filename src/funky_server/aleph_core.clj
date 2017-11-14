@@ -28,7 +28,7 @@
     
     (async/pipe out-ch out-raw-ch)
     (s/connect stream in-ch)
-    (s/connect out-raw-ch stream)
+    (s/connect out-raw-ch stream {:upstream? true})
 
     (async/go-loop []
       (async/<! (async/timeout 1000))
