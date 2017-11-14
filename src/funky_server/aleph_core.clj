@@ -1,4 +1,4 @@
-(ns funky-server.aleph-core  
+(ns funky-server.aleph-core
   (:require [clojure.core.async :as async]
             [clojure.tools.logging :as log]
             [clojure.data.json :as json]
@@ -10,8 +10,8 @@
             [clj-time.core :as t]
             [manifold.stream :as s]))
 
-(defn new-uuid 
-  "Retrieve a type 4 (pseudo randomly generated) UUID. The UUID is generated using a cryptographically strong pseudo random number generator." 
+(defn new-uuid
+  "Retrieve a type 4 (pseudo randomly generated) UUID. The UUID is generated using a cryptographically strong pseudo random number generator."
   []
   (str (java.util.UUID/randomUUID)))
 
@@ -25,7 +25,7 @@
         out-ch (async/chan (async/dropping-buffer 256) (map #(json/write-str %)) #(log/error "Error in sent message" %))
         out-raw-ch (async/chan (async/dropping-buffer 256))
         player {:in-local (async/chan) :in in-ch :out out-ch :out-raw out-raw-ch :last-msg-time last-msg-time}]
-    
+
     (async/pipe out-ch out-raw-ch)
     (s/connect stream in-ch)
     (s/connect out-raw-ch stream {:upstream? true})
@@ -44,7 +44,7 @@
                     @(http/websocket-connection req {:headers {:Sec-WebSocket-Protocol "binary"}})
                     (catch Exception e nil))]
     socket
-    (do 
+    (do
         (log/info "Not websocket")
         nil)))
 
@@ -86,7 +86,7 @@
 
 (defn handle-new-connection [stream info players]
   (log/info "new connection" info)
-  (async/go 
+  (async/go
     (some->> stream
              (wrap-duplex-stream protocol)
              init-player
@@ -141,12 +141,12 @@
         alive-filter (filter #(-> % :alive nil?))
         sync-filter (filter #(-> % :msg (not= "sync")))
         map-vec (map #(identity [%]))]
-    
+
     (if (zero? step-time)
       (do
         (async/pipeline 1 out (comp alive-filter map-vec) (async/tap in-mult (async/chan))) ;; simple case for stepless games
         (async/pipeline 1 out map-vec join-ch))
-      (do 
+      (do
         (async/pipeline 1 out (comp alive-filter sync-filter map-vec) (async/tap in-mult (async/chan)))
         (start-ticker step step-time out done join-ch)))
 
@@ -158,7 +158,7 @@
      :players #{}
      :synced-players (atom [])
      :next-player-id 0
-     :max-players max-players 
+     :max-players max-players
      :type type
      :done done
      :seed (rand-int 500000) ;; something big but avoids overflow
@@ -166,7 +166,7 @@
 
 
 (defn active? [player]
-  (< (t/in-millis (t/interval @(:last-msg-time player) (l/local-now))) 
+  (< (t/in-millis (t/interval @(:last-msg-time player) (l/local-now)))
      2000))
 
 (defn pick-syncer [game]
@@ -203,7 +203,7 @@
 
 (defn remove-player [player game]
   (if (contains? (:players game) (:id player))
-    (do 
+    (do
       (async/put! (:in-local player) {:disconnected (:id player)})
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
       (swap! (:synced-players game) (fn [players] (filter #(not= (:id %) (:id player)) players)))
@@ -214,7 +214,7 @@
    (keep-indexed #(when (pred %2) %1) coll))
 
 (defn valid-game? [game-info game]
-  (and (= (:type game) (:game-type game-info)) 
+  (and (= (:type game) (:game-type game-info))
        (-> game :players count (< (:max-players game-info)))
        (not (nil? (pick-syncer game)))))
 
@@ -242,6 +242,10 @@
     (quit-game games player)
     (join-game games player)))
 
+; NOTE/TODO: We use async/reduce with join-or-quit-game. It is kind of cool
+; that the games are not in an atom but game ended up containing atoms anyways
+; so putting games in an atom would make sense. It would make a couple of
+; things cleaner to implement.
 (defn start-lockstep-server [socket-server websocket-server]
   (let [players (async/chan 1)]
     (async/pipe (:players websocket-server) players)
