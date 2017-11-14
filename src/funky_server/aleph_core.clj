@@ -125,14 +125,6 @@
             (async/>! out (if (nil? join-msg) [lock-msg] [lock-msg (assoc join-msg :step (dec @step))])))
           (recur))))))
 
-(defn choose-topic [msg]
-  (if (contains? msg :lock)
-    :lock
-    (case (:msg msg) 
-      "sync" :sync 
-      "join" :join 
-      :other)))
-
 (defn start-game [type max-players step-time]
   (log/info "Starting game with type" type ", max-players" max-players ", step-time" step-time)
   (let [in (async/chan)
@@ -145,15 +137,17 @@
         out-sync-mult (async/mult out-sync)
         join-ch (async/chan 8)
         step (atom 0)
-        done (async/chan)]
+        done (async/chan)
+        alive-filter (filter #(-> % :alive nil?))
+        sync-filter (filter #(-> % :msg (not= "sync")))
+        map-vec (map #(identity [%]))]
     
     (if (zero? step-time)
-      (async/pipeline 1 out (filter #(-> % :alive nil?)) (async/tap in-mult (async/chan))) ;; simple case for stepless games
-      (let [alive-filter (filter #(-> % :alive nil?))
-            sync-filter (filter #(-> % :msg (not= "sync")))
-            map-step (map #(assoc % :step @step))
-            map-vec (map #(identity [%]))]
-        (async/pipeline 1 out (comp alive-filter sync-filter map-step map-vec) (async/tap in-mult (async/chan)))
+      (do
+        (async/pipeline 1 out (comp alive-filter map-vec) (async/tap in-mult (async/chan))) ;; simple case for stepless games
+        (async/pipeline 1 out map-vec join-ch))
+      (do 
+        (async/pipeline 1 out (comp alive-filter sync-filter map-vec) (async/tap in-mult (async/chan)))
         (start-ticker step step-time out done join-ch)))
 
     {:in in
@@ -181,17 +175,17 @@
       (:id (rand-nth active))
       nil)))
 
-(defn read-topic [m topic]
-  (let [c (async/tap m (async/chan (async/sliding-buffer 8)))]
-    (async/go-loop [msg (async/<! c)]
-      (if (= (choose-topic msg) topic)
-        msg
-        (recur (async/<! c))))))
+(defn read-one-from-mult [m]
+  (async/go
+    (let [c (async/tap m (async/chan))
+          r (async/<! c)]
+      (async/untap m c)
+      r)))
 
 (defn request-sync [player game]
   (async/go
     (async/>! (:join-ch game) {:msg "join" :syncer (pick-syncer game)})
-    (async/>! (:out player) (async/<! (read-topic (:out-sync-mult game) :sync)))))
+    (async/>! (:out player) (async/<! (read-one-from-mult (:out-sync-mult game))))))
 
 (defn add-player [player game]
   (let [playerId (:next-player-id game)
