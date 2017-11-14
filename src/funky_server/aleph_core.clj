@@ -10,9 +10,7 @@
             [clj-time.core :as t]
             [manifold.stream :as s]))
 
-(defn new-uuid
-  "Retrieve a type 4 (pseudo randomly generated) UUID. The UUID is generated using a cryptographically strong pseudo random number generator."
-  []
+(defn new-uuid []
   (str (java.util.UUID/randomUUID)))
 
 (def system-newline ;; This is in clojure.core but marked private.
@@ -133,8 +131,7 @@
         out-mult (async/mult out)
         out-raw (async/tap out-mult (async/chan 1 (map #(json/write-str %)) #(log/error "Error in sent message" %)))
         out-raw-mult (async/mult out-raw)
-        out-sync (async/tap in-mult (async/chan (async/dropping-buffer 1) (filter #(-> % :msg (= "sync")))))
-        out-sync-mult (async/mult out-sync)
+        in-sync-mult (async/mult (async/tap in-mult (async/chan (async/dropping-buffer 1) (filter #(-> % :msg (= "sync"))))))
         join-ch (async/chan 8)
         step (atom 0)
         done (async/chan)
@@ -154,7 +151,7 @@
      :join-ch join-ch
      :out-mult out-mult
      :out-raw-mult out-raw-mult
-     :out-sync-mult out-sync-mult
+     :in-sync-mult in-sync-mult
      :players #{}
      :synced-players (atom [])
      :next-player-id 0
@@ -185,7 +182,7 @@
 (defn request-sync [player game]
   (async/go
     (async/>! (:join-ch game) {:msg "join" :syncer (pick-syncer game)})
-    (async/>! (:out player) (async/<! (read-one-from-mult (:out-sync-mult game))))))
+    (async/>! (:out player) (async/<! (read-one-from-mult (:in-sync-mult game))))))
 
 (defn add-player [player game]
   (let [playerId (:next-player-id game)
