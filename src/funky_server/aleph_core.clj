@@ -18,15 +18,12 @@
 
 (defn- init-player [stream]
   (let [last-msg-time (atom (l/local-now))
-        handle-message #(do (reset! last-msg-time (l/local-now)) (json/read-str % :key-fn keyword))
-        in-ch (async/chan (async/sliding-buffer 64) (map handle-message) #(log/error "Error in received message" %))
-        out-ch (async/chan (async/dropping-buffer 256) (map #(json/write-str %)) #(log/error "Error in sent message" %))
-        out-raw-ch (async/chan (async/dropping-buffer 256))
-        player {:in-local (async/chan) :in in-ch :out out-ch :out-raw out-raw-ch :last-msg-time last-msg-time}]
+        in (async/chan (async/sliding-buffer 64) (map #(do (reset! last-msg-time (l/local-now)) %)))
+        out (async/chan (async/dropping-buffer 256))
+        player {:in-local (async/chan) :in in :out out :last-msg-time last-msg-time}]
 
-    (async/pipe out-ch out-raw-ch)
-    (s/connect stream in-ch)
-    (s/connect out-raw-ch stream {:upstream? true})
+    (s/connect stream in)
+    (s/connect out stream {:upstream? true})
 
     (async/go-loop []
       (async/<! (async/timeout 1000))
@@ -57,9 +54,9 @@
   (let [id (new-uuid)
         player (assoc player :id id)]
     (async/go
-      (async/>! (:out player) {:msg "Welcome!" :id id})
+      (async/>! (:out player) (json/write-str {:msg "Welcome!" :id id}))
       (loop []
-        (let [msg (async/<! (:in player))]
+        (let [msg (json/read-str (async/<! (:in player)) :key-fn keyword)]
           (if (nil? msg)
             nil
             (if (every? msg #{:gameType :maxPlayers :stepTime})
@@ -118,9 +115,9 @@
         (when (-> [done (async/timeout step-time)] async/alts! second (not= done))
           ;;(log/info (str "step " @step " " (l/local-now)))
           (swap! step inc)
-          (let [lock-msg {:lock (dec @step)}
+          (let [lock-msg (json/write-str {:lock (dec @step)})
                 join-msg (async/poll! join-ch)]
-            (async/>! out (if (nil? join-msg) [lock-msg] [lock-msg (assoc join-msg :step (dec @step))])))
+            (async/>! out (if (nil? join-msg) [lock-msg] [lock-msg join-msg])))
           (recur))))))
 
 (defn start-game [type max-players step-time]
@@ -129,28 +126,24 @@
         in-mult (async/mult in)
         out (async/chan 1 cat)
         out-mult (async/mult out)
-        out-raw (async/tap out-mult (async/chan 1 (map #(json/write-str %)) #(log/error "Error in sent message" %)))
-        out-raw-mult (async/mult out-raw)
-        in-sync-mult (async/mult (async/tap in-mult (async/chan (async/dropping-buffer 1) (filter #(-> % :msg (= "sync"))))))
+        in-sync-mult (async/mult (async/tap in-mult (async/chan (async/dropping-buffer 1) (filter #(.contains % "sync")))))
         join-ch (async/chan 8)
         step (atom 0)
         done (async/chan)
-        alive-filter (filter #(-> % :alive nil?))
-        sync-filter (filter #(-> % :msg (not= "sync")))
-        map-vec (map #(identity [%]))]
+        sync-filter-xf (filter #(not (.contains % "sync")))
+        vec-xf (map #(identity [%]))]
 
     (if (zero? step-time)
       (do
-        (async/pipeline 1 out (comp alive-filter map-vec) (async/tap in-mult (async/chan))) ;; simple case for stepless games
-        (async/pipeline 1 out map-vec join-ch))
+        (async/pipeline 1 out (comp vec-xf) (async/tap in-mult (async/chan))) ;; simple case for stepless games
+        (async/pipeline 1 out vec-xf join-ch))
       (do
-        (async/pipeline 1 out (comp alive-filter sync-filter map-vec) (async/tap in-mult (async/chan)))
+        (async/pipeline 1 out (comp sync-filter-xf vec-xf) (async/tap in-mult (async/chan)))
         (start-ticker step step-time out done join-ch)))
 
     {:in in
      :join-ch join-ch
      :out-mult out-mult
-     :out-raw-mult out-raw-mult
      :in-sync-mult in-sync-mult
      :players #{}
      :synced-players (atom [])
@@ -181,18 +174,27 @@
 
 (defn request-sync [player game]
   (async/go
-    (async/>! (:join-ch game) {:msg "join" :syncer (pick-syncer game)})
+    (async/>! (:join-ch game) (json/write-str {:msg "join" :syncer (pick-syncer game)}))
     (async/>! (:out player) (async/<! (read-one-from-mult (:in-sync-mult game))))))
 
+(defn add-player-id-to-msg [msg id]
+  (-> msg
+      (subs 0 (dec (count msg)))
+      (str ",\"playerId\":" id "}")))
+
+
 (defn add-player [player game]
-  (let [playerId (:next-player-id game)
-        newGame? (empty? (:players game))]
+  (let [player-id (:next-player-id game)
+        new-game? (empty? (:players game))
+        in (async/merge [(:in player) (:in-local player)])
+        add-player-id-xf (map #(add-player-id-to-msg % player-id))
+        filter-alive-xf (filter #(not (.contains % "alive")))]
     (log/info "Add player to game" (:type game) "with players" (:players game))
     (async/go
-      (async/>! (:out player) {:join true :newGame newGame? :playerId playerId :seed (:seed game)})
-      (async/tap (:out-raw-mult game) (:out-raw player))
-      (async/pipeline 1 (:in game) (map #(assoc % :playerId playerId)) (async/merge [(:in player) (:in-local player)]) false)
-      (when-not newGame? (async/<! (request-sync player game)))
+      (async/>! (:out player) (json/write-str {:join true :newGame new-game? :playerId player-id :seed (:seed game)}))
+      (async/tap (:out-mult game) (:out player))
+      (async/pipeline 1 (:in game) (comp filter-alive-xf add-player-id-xf) in false)
+      (when-not new-game? (async/<! (request-sync player game)))
       (swap! (:synced-players game) #(conj % player)))
     (-> game
         (update :players conj (:id player))
@@ -201,7 +203,7 @@
 (defn remove-player [player game]
   (if (contains? (:players game) (:id player))
     (do
-      (async/put! (:in-local player) {:disconnected (:id player)})
+      (async/put! (:in-local player) (json/write-str {:disconnected (:id player)}))
       (log/info "Removed player from game" (:type game) "Remaining players" (:players game))
       (swap! (:synced-players game) (fn [players] (filter #(not= (:id %) (:id player)) players)))
       (update game :players disj (:id player)))
