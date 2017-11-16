@@ -107,6 +107,11 @@
     (log/info "Starting async server at port" port)
     { :port port :players players :server aleph-server}))
 
+(defn add-step-to-msg [msg step]
+  (-> msg
+      (subs 0 (count msg))
+      (str ",\"step\":" step "}")))
+
 (defn start-ticker [step step-time out done join-ch]
   (let [start-time (l/local-now)]
     (async/go-loop []
@@ -117,7 +122,7 @@
           (swap! step inc)
           (let [lock-msg (json/write-str {:lock (dec @step)})
                 join-msg (async/poll! join-ch)]
-            (async/>! out (if (nil? join-msg) [lock-msg] [lock-msg join-msg])))
+            (async/>! out (if (nil? join-msg) [lock-msg] [lock-msg (add-step-to-msg join-msg (dec @step))])))
           (recur))))))
 
 (defn start-game [type max-players step-time]
