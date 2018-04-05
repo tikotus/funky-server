@@ -11,4 +11,5 @@
                  [http-kit "2.2.0"]
                  [clj-time "0.13.0"]
                  [aleph "0.4.4"]
-                 [gloss "0.2.5"]])
+                 [gloss "0.2.5"]
+                 [org.clojure/tools.namespace "0.2.11"]])

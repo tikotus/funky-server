@@ -56,7 +56,7 @@
     (async/go
       (async/>! (:out player) (json/write-str {:msg "Welcome!" :id id}))
       (loop []
-        (let [msg (json/read-str (async/<! (:in player)) :key-fn keyword)]
+        (let [msg (json/read-str (or (async/<! (:in player)) "") :key-fn keyword :eof-error? false)]
           (if (nil? msg)
             nil
             (if (every? msg #{:gameType :maxPlayers :stepTime})
